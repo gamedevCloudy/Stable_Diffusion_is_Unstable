@@ -7,6 +7,7 @@ import torchvision
 import torchvision.transforms as T
 from PIL import Image
 
+
 # If you need them directly:
 from transformers import CLIPModel, CLIPProcessor
 
@@ -41,56 +42,61 @@ def build_zeroshot_weights_hf(clip_model, clip_processor, classnames, templates)
     return zeroshot_weights.to(device)
 
 
+
 def img_process(images, img_size):
     """
-    Example function for post-processing images prior to CLIP.
-    1) Ensures 'images' is a Torch tensor of shape [B, C, H, W].
-    2) Uses an ROIAlign operation to extract a 224x224 region.
-    If you rely on Hugging Face CLIPProcessor for resizing, you might remove this.
+    Convert PIL image(s) -> Tensor [B, C, H, W] -> Move to CUDA -> ROIAlign -> [B, C, 224, 224].
     """
-    # 1) Convert single PIL or list of PIL to a batch tensor
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    # 1) Convert single PIL or list-of-PIL to a batch tensor
     if isinstance(images, Image.Image):
-        # single PIL => wrap in list
+        # single PIL => make a list
         images = [images]
 
     if isinstance(images, list) and isinstance(images[0], Image.Image):
-        # a list of PIL images
-        to_tensor = T.ToTensor()  # converts PIL to [C, H, W] in [0..1]
-        tensors = []
+        to_tensor = T.ToTensor()  # [C,H,W]
+        tensor_list = []
         for pil_img in images:
-            t = to_tensor(pil_img).unsqueeze(0)  # [1, C, H, W]
-            tensors.append(t)
-        images = torch.cat(tensors, dim=0)  # [B, C, H, W]
+            t = to_tensor(pil_img).unsqueeze(0)  # [1,C,H,W]
+            tensor_list.append(t)
+        images = torch.cat(tensor_list, dim=0)  # [B,C,H,W]
 
     if not isinstance(images, torch.Tensor):
         raise TypeError("img_process expects a torch.Tensor or list of PIL images.")
 
-    # images is now shape [B, C, H, W]
-    device = images.device if images.is_cuda else torch.device("cuda")
+    # 2) Now move images to CUDA if available
+    images = images.to(device)
 
-    # 2) ROIAlign to produce 224x224
+    # 3) Create ROIAlign
     roiAlign = torchvision.ops.RoIAlign(
         output_size=224,
         sampling_ratio=-1,
         spatial_scale=1,
-        aligned=True
+        aligned=True,
     )
+
     B = images.shape[0]
     batch_image = []
-    # Single bounding box covering [0,0,img_size,img_size]
-    coord = torch.tensor([[0.0, 0.0, float(img_size), float(img_size)]], device=device)
 
+    # 4) Build a bounding box on the same device as images
+    coord = torch.tensor(
+        [[0.0, 0.0, float(img_size), float(img_size)]],
+        device=device,
+        dtype=torch.float32
+    )
+
+    # 5) Loop over each image, apply ROIAlign
     for i in range(B):
-        # image_i shape: [1, C, H, W]
+        # image_i is shape [1,C,H,W]
         image_i = images[i].unsqueeze(0)
-        # apply ROIAlign => result shape [C, 224, 224]
+        # ROIAlign => [C,224,224]
         roi = roiAlign(image_i, [coord]).squeeze(0)
         batch_image.append(roi)
 
-    # Final => [B, C, 224, 224]
+    # 6) Stack => [B,C,224,224]
     batch_image = torch.stack(batch_image, dim=0)
     return batch_image
-
 
 def save_pil_image(image, clean_text, successful, adv_text):
     """
