@@ -326,7 +326,7 @@ def main():
                 # Convert Gumbel distribution -> text encoder input
                 inputs_embeds = coeffs @ embeddings[None, :, :]  # [B, T, D]
                 # Pass to SD text encoder
-                inputs_embeds = pipe.text_encoder(inputs_embeds=inputs_embeds)[0]
+                # inputs_embeds = pipe.text_encoder(inputs_embeds=inputs_embeds)[0]
 
                 # Generate images
                 images = pipe(
